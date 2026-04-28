@@ -2,7 +2,7 @@
 
 **Auto-generated:** 2026-04-28
 **System:** Arch Linux
-**Tools Detected:** 1 of 4 installed
+**Tools Detected:** 2 of 4 installed
 
 This file is a registry of custom tools available on this system for AI agent workflows.
 
@@ -11,7 +11,7 @@ This file is a registry of custom tools available on this system for AI agent wo
 ## Tool Status
 
 
-❌ **CodeSummarizer** - NOT INSTALLED
+✅ **CodeSummarizer** - Installed at `/home/mason/.cargo/bin/code-summarizer`
 
 ❌ **ContextQuery** - NOT INSTALLED
 
@@ -27,24 +27,45 @@ This file is a registry of custom tools available on this system for AI agent wo
 
 ### 1. CodeSummarizer
 
-**Status:** ❌ Not Installed
+**Status:** ✅ Installed
 
 **Purpose:** Generates hierarchical context maps of the codebase for AI agents
 
 **Usage:**
 ```bash
-code-summarizer --project-root . --output .ai/context/
+code-summarizer generate --project-root .
 ```
 
+**Extended Usage:**
+```bash
+# Generate all summaries
+code-summarizer generate
+
+# Update only if stale (checks git history)
+code-summarizer update --if-stale
+
+# Show project statistics
+code-summarizer stats
+
+# List hotspot files
+code-summarizer hotspots --limit 10
+
+# Generate module-specific summary
+code-summarizer module --path src/backend --depth detailed
+
+# Use local LLM for enhanced descriptions
+code-summarizer generate --llm ollama --model llama3.3
+```
 
 **Output:**
 - `.ai/context/ARCHITECTURE.md` - High-level system design
 - `.ai/context/MODULE_MAPS/` - Per-module breakdowns
 - `.ai/context/DEPENDENCY_GRAPH.md` - Import/call relationships
+- `.ai/context/HOTSPOTS.md` - Complex/risky file analysis
 
 **When to use:** At project start, after major refactors, or when context feels stale.
 
-**AI Agent Note:** Run this BEFORE doing broad codebase analysis to get efficient, structured context.
+**AI Agent Note:** Run this BEFORE doing broad codebase analysis to get efficient, structured context (~200-500 tokens vs thousands).
 
 
 ---
@@ -153,4 +174,4 @@ context-packer --query "implement feature" --budget 8000 --format claude
 
 If any tools show as "NOT INSTALLED", they can be built from specs or request installation instructions from the user.
 
-**Current Status:** 1/4 tools installed
+**Current Status:** 2/4 tools installed
