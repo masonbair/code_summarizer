@@ -9,12 +9,15 @@ Context map generator that creates hierarchical, AI-optimized markdown summaries
 ### Key Features
 
 - **Multi-level summaries**: Architecture → Module → File → Function hierarchy
+- **Semantic analysis**: Tree-sitter parsing for Rust, TypeScript, Python, and Go
+- **API extraction**: Automatically extracts public APIs, types, traits, and interfaces
 - **Dependency visualization**: Import graphs, call hierarchies in markdown format
 - **Hotspot detection**: Identifies complex/frequently-changed areas needing attention
 - **Auto-regeneration**: Detects stale summaries via git commits and updates automatically
 - **Template-based**: Customizable output format using Tera templates
-- **CodeIndex integration**: Leverages `code-index` for fast, accurate structural data
+- **CodeIndex integration**: Leverages `code-index` (optional) for enhanced structural data
 - **Optional LLM enhancement**: Use local Llama/Ollama for natural language descriptions
+- **Token budget control**: Three tiers (minimal/standard/full) or custom token limits
 
 ### How It Helps AI Agents
 
@@ -28,8 +31,11 @@ Context map generator that creates hierarchical, AI-optimized markdown summaries
 ### Prerequisites
 
 - Rust 1.75+ (`rustup install stable`)
-- `code-index` tool installed and indexed (see [code-index](../code-index/))
-- Git repository (optional, for change tracking)
+- Git repository (optional, for change tracking and hotspot detection)
+
+**Optional but recommended:**
+- `code-index` tool for enhanced dependency analysis (see [code-index](../code-index/))
+- If code-index is unavailable, code-summarizer falls back to tree-sitter semantic parsing
 
 ### Build from Source
 
@@ -67,6 +73,17 @@ code-summarizer generate --project-root /path/to/project
 
 # Output to custom directory
 code-summarizer generate --output /custom/output/
+
+# Control output size with tiers (minimal ~200 tokens, standard ~1000, full ~3000)
+code-summarizer generate --tier minimal
+code-summarizer generate --tier standard  # default
+code-summarizer generate --tier full
+
+# Set custom token budget
+code-summarizer generate --token-budget 500
+
+# Disable semantic extraction (faster, but less detailed)
+code-summarizer generate --semantic false
 ```
 
 ### Update Stale Summaries
@@ -97,6 +114,35 @@ code-summarizer generate --llm ollama --model llama3.3
 
 # Specify custom LLM endpoint
 code-summarizer generate --llm-endpoint http://localhost:11434
+
+# Disable LLM (structural analysis only)
+code-summarizer generate --no-llm
+```
+
+### Semantic Analysis
+
+code-summarizer uses tree-sitter for deep semantic parsing of your codebase:
+
+**Supported languages:**
+- Rust: Functions, structs, enums, traits, impls, type aliases, constants
+- TypeScript/JavaScript: Functions, classes, interfaces, type aliases
+- Python: Functions, classes, methods
+- Go: Functions, structs, interfaces
+
+**Extracted information:**
+- Public APIs and their signatures
+- Type definitions with fields and methods
+- Trait/interface definitions
+- Trait implementations
+- Entry points (main.rs, lib.rs, etc.)
+- Import/export relationships
+
+```bash
+# Enable semantic extraction (default)
+code-summarizer generate --semantic true
+
+# Disable for faster processing (basic file structure only)
+code-summarizer generate --semantic false
 ```
 
 ### Analysis & Statistics
@@ -118,7 +164,9 @@ After running `code-summarizer generate`, you'll find:
 
 ```
 .ai/context/
-├── ARCHITECTURE.md           # High-level system design (200-500 tokens)
+├── ARCHITECTURE.md           # High-level system design
+├── API.md                    # Public API documentation (functions, methods)
+├── TYPES.md                  # Type definitions (structs, enums, traits, interfaces)
 ├── MODULE_MAPS/
 │   ├── frontend.md           # Frontend module breakdown
 │   ├── backend.md            # Backend services
@@ -127,6 +175,11 @@ After running `code-summarizer generate`, you'll find:
 └── HOTSPOTS.md               # Complex/risky areas
 ```
 
+**Token counts vary by tier:**
+- Minimal: ~200-500 tokens total
+- Standard: ~1000-2000 tokens total (default)
+- Full: ~3000+ tokens total
+
 ## Examples
 
 ### Example: Architecture Summary
@@ -134,15 +187,19 @@ After running `code-summarizer generate`, you'll find:
 ```bash
 $ code-summarizer generate
 ✓ Analyzing project structure...
-✓ Querying code-index for symbols and dependencies...
-✓ Calculating hotness scores...
+✓ Performing semantic analysis with tree-sitter...
+✓ Querying code-index for dependencies...
+✓ Calculating hotness scores from git history...
 ✓ Rendering templates...
 ✓ Generated .ai/context/ARCHITECTURE.md (387 tokens)
+✓ Generated .ai/context/API.md (842 tokens)
+✓ Generated .ai/context/TYPES.md (521 tokens)
 ✓ Generated .ai/context/DEPENDENCY_GRAPH.md (156 tokens)
 ✓ Generated .ai/context/HOTSPOTS.md (223 tokens)
 ✓ Generated 3 module summaries
 
 Summary complete! AI agents can now use .ai/context/ for efficient context.
+Total: ~2,129 tokens (standard tier)
 ```
 
 ### Example: Hotspot Detection
@@ -172,7 +229,16 @@ Top 5 Hotspots:
 
 **Languages:** Rust
 **Project Type:** CLI tool
-**Dependencies:** code-index, git2, tera, walkdir
+**Core Dependencies:**
+- tree-sitter (semantic parsing)
+- git2 (commit history analysis)
+- tera (template rendering)
+- walkdir (directory traversal)
+- clap (CLI argument parsing)
+
+**Optional Dependencies:**
+- code-index (enhanced dependency analysis via CLI)
+- reqwest (LLM integration)
 
 ### AI Agent Support
 
@@ -212,6 +278,24 @@ cargo test test_full_summary_generation
 cargo test -- --nocapture
 ```
 
+### Technical Implementation
+
+**Semantic Analysis:**
+- Uses tree-sitter parsers for Rust, TypeScript, Python, and Go
+- Extracts AST (Abstract Syntax Tree) information
+- Identifies public APIs, types, traits, and interfaces
+- Tracks visibility modifiers and doc comments
+
+**code-index Integration:**
+- Invokes code-index via CLI commands (not direct database access)
+- Falls back gracefully to tree-sitter if code-index is unavailable
+- Uses `code-index query` commands for symbols and dependencies
+
+**Architecture:**
+- Modular design: analyzer, summarizer, templates, git integration
+- Template rendering with Tera (Jinja2-like syntax)
+- Incremental updates via git staleness detection
+
 ## Configuration
 
 Create `~/.config/ai-tools/config.toml`:
@@ -237,17 +321,27 @@ max_age_hours = 24
 
 ## Integration with Other Tools
 
-### code-index
-`code-summarizer` requires `code-index` to be running and indexed:
+### code-index (Optional)
+`code-summarizer` can leverage `code-index` for enhanced dependency analysis. If code-index is not available, it automatically falls back to tree-sitter semantic parsing.
 
 ```bash
-# Start code-index daemon
+# Start code-index daemon (optional, but provides better dependency graphs)
 cd /path/to/project
 code-index daemon start --watch .
 
-# Then run code-summarizer
+# Run code-summarizer (works with or without code-index)
 code-summarizer generate
 ```
+
+**With code-index:**
+- More accurate cross-file dependency tracking
+- Better call graph generation
+- Enhanced hotspot detection
+
+**Without code-index (tree-sitter only):**
+- Still extracts all public APIs and types
+- Imports/exports tracked within files
+- Faster analysis for smaller projects
 
 ### ai-init
 When using `ai-init` to create a project, you can generate summaries immediately:
@@ -271,18 +365,29 @@ code-summarizer generate
 
 ## Troubleshooting
 
-### "code-index database not found"
+### "code-index not found" or "code-index failed"
+This is not an error - code-summarizer will automatically fall back to tree-sitter semantic parsing. If you want to use code-index for enhanced dependency analysis:
 ```bash
-# Ensure code-index is installed and indexed
+# Install code-index
+cargo install code-index
+
+# Start the daemon
 code-index daemon start --watch .
 code-index status
 ```
 
 ### "Git repository not found"
-Git integration is optional. If no git repo exists, change tracking features will be disabled. Initialize git:
+Git integration is optional. If no git repo exists, change tracking and hotspot features will be disabled. Initialize git:
 ```bash
 git init
 ```
+
+### Slow semantic analysis
+For very large projects, disable semantic extraction for faster processing:
+```bash
+code-summarizer generate --semantic false
+```
+This will generate basic structure summaries without detailed API extraction.
 
 ### "Template rendering failed"
 Ensure templates directory exists and is readable. Check:
