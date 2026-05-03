@@ -18,6 +18,17 @@ pub const ARCHITECTURE_TEMPLATE: &str = r#"# {{ project.root | split(pat="/") | 
 {% for subdir in module.subdirs %}│   ├── {{ subdir }}/
 {% endfor %}{% endfor %}```
 
+{% if project.entry_points | length > 0 %}
+## Entry Points
+
+{% for entry in project.entry_points %}
+### {% if entry.kind == "MainFunction" %}CLI Entry{% elif entry.kind == "LibraryRoot" %}Library Root{% elif entry.kind == "ModuleRoot" %}Module Root{% else %}Entry{% endif %}: `{{ entry.file_path }}`
+{% if entry.exports | length > 0 %}
+**Exports:** {{ entry.exports | join(sep=", ") }}
+{% endif %}
+{% endfor %}
+{% endif %}
+
 ## Modules Overview
 
 {% for module in project.modules %}
@@ -25,10 +36,39 @@ pub const ARCHITECTURE_TEMPLATE: &str = r#"# {{ project.root | split(pat="/") | 
 
 - **Path:** `{{ module.path }}`
 - **Files:** {{ module.files | length }}
-- **Subdirectories:** {{ module.subdirs | length }}
-{% if module.description %}- **Description:** {{ module.description }}{% endif %}
+{% if module.purpose %}
+- **Purpose:** {{ module.purpose.summary }}
+{% if module.purpose.patterns | length > 0 %}- **Patterns:** {{ module.purpose.patterns | join(sep=", ") }}{% endif %}
+{% if module.purpose.key_components | length > 0 %}- **Key Components:** {{ module.purpose.key_components | join(sep=", ") }}{% endif %}
+{% endif %}
+
+{% if module.public_apis | length > 0 %}
+#### Public API ({{ module.public_apis | length }} items)
+{% for api in module.public_apis | slice(end=5) %}
+- `{{ api.signature | truncate(length=80) }}`
+{% endfor %}
+{% set api_count = module.public_apis | length %}
+{% if api_count > 5 %}
+*... and {{ api_count - 5 }} more*
+{% endif %}
+{% endif %}
+
+{% if module.traits | length > 0 %}
+#### Traits Defined
+{% for trait in module.traits %}
+- **{{ trait.name }}** ({{ trait.methods | length }} methods)
+{% endfor %}
+{% endif %}
 
 {% endfor %}
+
+{% if project.all_traits | length > 0 %}
+## Trait Implementations
+
+{% for impl in project.all_trait_impls %}
+- `{{ impl.impl_type }}` implements `{{ impl.trait_name }}` (`{{ impl.file_path }}:{{ impl.line }}`)
+{% endfor %}
+{% endif %}
 
 ## Statistics
 
@@ -54,7 +94,80 @@ pub const MODULE_TEMPLATE: &str = r#"# {{ module.name }} - Module Summary
 
 ## Overview
 
-{% if module.description %}{{ module.description }}{% else %}Module containing {{ module.files | length }} files.{% endif %}
+{% if module.purpose %}
+**Purpose:** {{ module.purpose.summary }}
+{% if module.purpose.patterns | length > 0 %}
+
+**Patterns:** {{ module.purpose.patterns | join(sep=", ") }}
+{% endif %}
+{% if module.purpose.key_components | length > 0 %}
+
+**Key Components:** {{ module.purpose.key_components | join(sep=", ") }}
+{% endif %}
+{% else %}
+Module containing {{ module.files | length }} files.
+{% endif %}
+
+{% if module.public_apis | length > 0 %}
+## Public API
+
+{% for api in module.public_apis %}
+### {{ api.name }} ({{ api.kind }})
+
+```
+{{ api.signature }}
+```
+{% if api.doc_comment %}
+{{ api.doc_comment }}
+{% endif %}
+
+*Location: `{{ api.file_path }}:{{ api.line }}`*
+
+{% endfor %}
+{% endif %}
+
+{% if module.traits | length > 0 %}
+## Traits Defined
+
+{% for trait in module.traits %}
+### {{ trait.name }}
+
+{% if trait.doc_comment %}{{ trait.doc_comment }}{% endif %}
+
+**Methods:**
+{% for method in trait.methods %}
+- `{{ method.signature }}`
+{% endfor %}
+
+*Location: `{{ trait.file_path }}:{{ trait.line }}`*
+
+{% endfor %}
+{% endif %}
+
+{% if module.types | length > 0 %}
+## Type Definitions
+
+{% for type in module.types %}
+### {{ type.name }} ({{ type.kind }})
+
+{% if type.fields | length > 0 %}
+**Fields:**
+{% for field in type.fields %}
+- `{{ field.name }}`: {{ field.type_annotation }}
+{% endfor %}
+{% endif %}
+
+{% if type.methods | length > 0 %}
+**Methods:**
+{% for method in type.methods %}
+- `{{ method.signature }}`
+{% endfor %}
+{% endif %}
+
+*Location: `{{ type.file_path }}:{{ type.line }}`*
+
+{% endfor %}
+{% endif %}
 
 ## Files
 
@@ -135,21 +248,34 @@ Hotspots are files that combine multiple risk factors:
 - **Lines of Code:** Larger files are harder to maintain
 - **Change Frequency:** Frequently modified files may be unstable
 - **Dependencies:** Files with many dependencies are more coupled
+- **Cyclomatic Complexity:** Files with many branches are harder to test
+- **Nesting Depth:** Deeply nested code is harder to understand
 
 The **hotness score** combines these factors to identify files that may need attention.
 
 ## Top Hotspots
 
 {% for hotspot in hotspots %}
-### {{ loop.index }}. {{ hotspot.relative_path }}
+### {{ loop.index }}. {{ hotspot.relative_path }}{% if hotspot.enhanced_metrics %} - {{ hotspot.enhanced_metrics.priority }} PRIORITY{% endif %}
 
-| Metric | Value |
-|--------|-------|
-| Lines of Code | {{ hotspot.lines_of_code }} |
-| Change Count | {{ hotspot.change_count }} |
-| Dependencies | {{ hotspot.dependency_count }} |
-| Complexity Score | {{ hotspot.complexity_score | round(precision=1) }} |
+| Metric | Value |{% if hotspot.enhanced_metrics %} Concern |{% endif %}
+|--------|-------|{% if hotspot.enhanced_metrics %}---------|{% endif %}
+| Lines of Code | {{ hotspot.lines_of_code }} |{% if hotspot.enhanced_metrics %}{% if hotspot.lines_of_code > 300 %} Large file |{% else %} OK |{% endif %}{% endif %}
+| Change Count | {{ hotspot.change_count }} |{% if hotspot.enhanced_metrics %}{% if hotspot.change_count > 15 %} Frequently changed |{% else %} OK |{% endif %}{% endif %}
+| Dependencies | {{ hotspot.dependency_count }} |{% if hotspot.enhanced_metrics %}{% if hotspot.dependency_count > 8 %} High coupling |{% else %} OK |{% endif %}{% endif %}
+{% if hotspot.enhanced_metrics %}| Cyclomatic Complexity | {{ hotspot.enhanced_metrics.cyclomatic_complexity }} |{% if hotspot.enhanced_metrics.cyclomatic_complexity > 15 %} High branching |{% else %} OK |{% endif %}
+| Nesting Depth (max) | {{ hotspot.enhanced_metrics.max_nesting_depth }} |{% if hotspot.enhanced_metrics.max_nesting_depth > 4 %} Deep nesting |{% else %} OK |{% endif %}
+| Public API Surface | {{ hotspot.enhanced_metrics.public_api_surface }} |{% if hotspot.enhanced_metrics.public_api_surface > 10 %} Large interface |{% else %} OK |{% endif %}
+| Function Count | {{ hotspot.enhanced_metrics.function_count }} |
+{% endif %}| Complexity Score | {{ hotspot.complexity_score | round(precision=1) }} |
 | **Hotness Score** | **{{ hotspot.hotness_score | round(precision=1) }}** |
+
+{% if hotspot.enhanced_metrics and hotspot.enhanced_metrics.recommendations | length > 0 %}
+**Recommendations:**
+{% for rec in hotspot.enhanced_metrics.recommendations %}
+- {{ rec }}
+{% endfor %}
+{% endif %}
 
 {% endfor %}
 
@@ -164,6 +290,7 @@ No hotspots detected. This could mean:
 
 ```
 hotness = (change_count × 2.0) + (lines / 100.0) + (dependencies × 1.5)
+         + (cyclomatic_complexity × 0.8) + (public_api_surface × 0.3)
 ```
 
 Higher scores indicate files that may benefit from:
@@ -171,6 +298,137 @@ Higher scores indicate files that may benefit from:
 - Breaking into smaller modules
 - Additional testing
 - Code review focus
+
+---
+*Generated by code-summarizer*
+"#;
+
+/// Built-in template for public API reference
+pub const API_TEMPLATE: &str = r#"# Public API Reference
+
+**Generated:** {{ generated_at }}
+
+This document provides a comprehensive reference of all public APIs in the codebase.
+
+{% for module in modules %}
+## {{ module.name }}
+
+{% if module.purpose %}
+*{{ module.purpose.summary }}*
+{% endif %}
+
+{% if module.traits | length > 0 %}
+### Traits
+
+{% for trait in module.traits %}
+#### {{ trait.name }}
+
+```
+trait {{ trait.name }} {
+{% for method in trait.methods %}    {{ method.signature }};
+{% endfor %}}
+```
+
+{% if trait.doc_comment %}
+{{ trait.doc_comment }}
+{% endif %}
+
+*Defined in `{{ trait.file_path }}:{{ trait.line }}`*
+
+{% endfor %}
+{% endif %}
+
+{% if module.types | length > 0 %}
+### Types
+
+{% for type in module.types %}
+#### {{ type.name }} ({{ type.kind }})
+
+{% if type.fields | length > 0 %}
+**Fields:**
+| Name | Type |
+|------|------|
+{% for field in type.fields %}| `{{ field.name }}` | `{{ field.type_annotation }}` |
+{% endfor %}
+{% endif %}
+
+{% if type.methods | length > 0 %}
+**Methods:**
+{% for method in type.methods %}
+- `{{ method.signature }}`
+{% endfor %}
+{% endif %}
+
+*Defined in `{{ type.file_path }}:{{ type.line }}`*
+
+{% endfor %}
+{% endif %}
+
+{% if module.public_apis | length > 0 %}
+### Functions
+
+{% for api in module.public_apis %}
+{% if api.kind == "Function" %}
+#### `{{ api.name }}`
+
+```
+{{ api.signature }}
+```
+
+{% if api.doc_comment %}
+{{ api.doc_comment }}
+{% endif %}
+
+*Defined in `{{ api.file_path }}:{{ api.line }}`*
+
+{% endif %}
+{% endfor %}
+{% endif %}
+
+{% endfor %}
+
+---
+*Generated by code-summarizer*
+"#;
+
+/// Built-in template for type definitions
+pub const TYPES_TEMPLATE: &str = r#"# Core Type Definitions
+
+**Generated:** {{ generated_at }}
+
+This document lists all public types (structs, enums, classes) defined in the codebase.
+
+{% for module in modules %}
+{% if module.types | length > 0 %}
+## {{ module.name }}
+
+{% for type in module.types %}
+### {{ type.name }}
+
+```
+{% if type.kind == "Struct" %}pub struct {{ type.name }} {
+{% for field in type.fields %}    pub {{ field.name }}: {{ field.type_annotation }},
+{% endfor %}}{% elif type.kind == "Enum" %}pub enum {{ type.name }} {
+{% for field in type.fields %}    {{ field.name }},
+{% endfor %}}{% else %}{{ type.kind }} {{ type.name }} { ... }{% endif %}
+```
+
+{% if type.doc_comment %}
+{{ type.doc_comment }}
+{% endif %}
+
+{% if type.methods | length > 0 %}
+**Methods:**
+{% for method in type.methods %}
+- `{{ method.signature }}`
+{% endfor %}
+{% endif %}
+
+*Location: `{{ type.file_path }}:{{ type.line }}`*
+
+{% endfor %}
+{% endif %}
+{% endfor %}
 
 ---
 *Generated by code-summarizer*

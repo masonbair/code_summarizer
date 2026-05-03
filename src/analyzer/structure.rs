@@ -6,6 +6,7 @@ use walkdir::WalkDir;
 
 use crate::code_index::CodeIndexClient;
 use crate::git::GitClient;
+use super::semantic::{SemanticAnalyzer, FileSemantics, PublicApi, TraitDef, TypeDef, TraitImplInfo, EntryPoint};
 
 /// Represents the analyzed structure of a project
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -15,6 +16,9 @@ pub struct ProjectStructure {
     pub total_files: usize,
     pub total_lines: usize,
     pub language_breakdown: HashMap<String, usize>,
+    pub entry_points: Vec<EntryPoint>,
+    pub all_traits: Vec<TraitDef>,
+    pub all_trait_impls: Vec<TraitImplInfo>,
 }
 
 /// Represents a module (directory) in the project
@@ -25,6 +29,18 @@ pub struct Module {
     pub files: Vec<FileInfo>,
     pub subdirs: Vec<String>,
     pub description: Option<String>,
+    pub purpose: Option<ModulePurpose>,
+    pub public_apis: Vec<PublicApi>,
+    pub types: Vec<TypeDef>,
+    pub traits: Vec<TraitDef>,
+}
+
+/// Detected purpose of a module
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModulePurpose {
+    pub summary: String,
+    pub patterns: Vec<String>,
+    pub key_components: Vec<String>,
 }
 
 /// Information about a single file
@@ -35,6 +51,7 @@ pub struct FileInfo {
     pub lines: usize,
     pub language: String,
     pub size_bytes: u64,
+    pub semantics: Option<FileSemantics>,
 }
 
 /// Main analyzer for project structure
@@ -42,6 +59,7 @@ pub struct ProjectAnalyzer {
     project_root: PathBuf,
     index_client: Option<CodeIndexClient>,
     git_client: Option<GitClient>,
+    semantic_analyzer: Option<SemanticAnalyzer>,
 }
 
 impl ProjectAnalyzer {
@@ -63,10 +81,17 @@ impl ProjectAnalyzer {
             log::warn!("Git repository not found, change tracking disabled");
         }
 
+        // Create semantic analyzer
+        let semantic_analyzer = SemanticAnalyzer::new().ok();
+        if semantic_analyzer.is_none() {
+            log::warn!("Semantic analyzer not available");
+        }
+
         Ok(Self {
             project_root,
             index_client,
             git_client,
+            semantic_analyzer,
         })
     }
 
@@ -76,6 +101,9 @@ impl ProjectAnalyzer {
         let mut total_files = 0;
         let mut total_lines = 0;
         let mut language_breakdown: HashMap<String, usize> = HashMap::new();
+        let mut all_entry_points = Vec::new();
+        let mut all_traits = Vec::new();
+        let mut all_trait_impls = Vec::new();
 
         // Find top-level directories as modules
         let entries: Vec<_> = std::fs::read_dir(&self.project_root)?
@@ -93,6 +121,13 @@ impl ProjectAnalyzer {
 
             for file in &module.files {
                 *language_breakdown.entry(file.language.clone()).or_insert(0) += 1;
+
+                // Collect entry points, traits, and impls from file semantics
+                if let Some(ref sem) = file.semantics {
+                    all_entry_points.extend(sem.entry_points.clone());
+                    all_traits.extend(sem.traits.clone());
+                    all_trait_impls.extend(sem.trait_impls.clone());
+                }
             }
 
             modules.push(module);
@@ -111,9 +146,28 @@ impl ProjectAnalyzer {
 
         for file in &root_files {
             *language_breakdown.entry(file.language.clone()).or_insert(0) += 1;
+
+            // Collect entry points, traits, and impls
+            if let Some(ref sem) = file.semantics {
+                all_entry_points.extend(sem.entry_points.clone());
+                all_traits.extend(sem.traits.clone());
+                all_trait_impls.extend(sem.trait_impls.clone());
+            }
         }
 
         if !root_files.is_empty() {
+            let mut root_public_apis = Vec::new();
+            let mut root_types = Vec::new();
+            let mut root_traits = Vec::new();
+
+            for file in &root_files {
+                if let Some(ref sem) = file.semantics {
+                    root_public_apis.extend(sem.public_apis.clone());
+                    root_types.extend(sem.types.clone());
+                    root_traits.extend(sem.traits.clone());
+                }
+            }
+
             modules.insert(
                 0,
                 Module {
@@ -122,6 +176,10 @@ impl ProjectAnalyzer {
                     files: root_files,
                     subdirs: vec![],
                     description: Some("Root directory files".to_string()),
+                    purpose: None,
+                    public_apis: root_public_apis,
+                    types: root_types,
+                    traits: root_traits,
                 },
             );
         }
@@ -132,6 +190,9 @@ impl ProjectAnalyzer {
             total_files,
             total_lines,
             language_breakdown,
+            entry_points: all_entry_points,
+            all_traits,
+            all_trait_impls,
         })
     }
 
@@ -144,6 +205,9 @@ impl ProjectAnalyzer {
 
         let mut files = Vec::new();
         let mut subdirs = Vec::new();
+        let mut module_public_apis = Vec::new();
+        let mut module_types = Vec::new();
+        let mut module_traits = Vec::new();
 
         for entry in WalkDir::new(module_path)
             .max_depth(10)
@@ -155,6 +219,12 @@ impl ProjectAnalyzer {
 
             if path.is_file() {
                 if let Ok(file_info) = self.analyze_file(path) {
+                    // Collect module-level semantic info
+                    if let Some(ref sem) = file_info.semantics {
+                        module_public_apis.extend(sem.public_apis.clone());
+                        module_types.extend(sem.types.clone());
+                        module_traits.extend(sem.traits.clone());
+                    }
                     files.push(file_info);
                 }
             } else if path.is_dir() && path != module_path {
@@ -167,13 +237,155 @@ impl ProjectAnalyzer {
             }
         }
 
+        // Infer module purpose
+        let purpose = self.infer_module_purpose(&name, &files, &module_public_apis, &module_traits);
+
         Ok(Module {
             name,
             path: module_path.to_path_buf(),
             files,
             subdirs,
-            description: None,
+            description: purpose.as_ref().map(|p| p.summary.clone()),
+            purpose,
+            public_apis: module_public_apis,
+            types: module_types,
+            traits: module_traits,
         })
+    }
+
+    /// Infer the purpose of a module based on its contents
+    fn infer_module_purpose(
+        &self,
+        name: &str,
+        files: &[FileInfo],
+        public_apis: &[PublicApi],
+        traits: &[TraitDef],
+    ) -> Option<ModulePurpose> {
+        let mut patterns = Vec::new();
+        let mut key_components = Vec::new();
+
+        // Check for common module patterns based on name
+        let summary = match name {
+            "cli" | "args" | "commands" => {
+                patterns.push("Command-line interface".to_string());
+                "Handles CLI argument parsing and command execution".to_string()
+            }
+            "config" | "settings" | "configuration" => {
+                patterns.push("Configuration management".to_string());
+                "Manages application configuration and settings".to_string()
+            }
+            "api" | "routes" | "handlers" | "endpoints" => {
+                patterns.push("API layer".to_string());
+                "Defines API endpoints and request handlers".to_string()
+            }
+            "db" | "database" | "models" | "schema" => {
+                patterns.push("Data layer".to_string());
+                "Database models and data access".to_string()
+            }
+            "auth" | "authentication" | "security" => {
+                patterns.push("Security layer".to_string());
+                "Handles authentication and security".to_string()
+            }
+            "utils" | "helpers" | "common" | "shared" => {
+                patterns.push("Utilities".to_string());
+                "Shared utility functions and helpers".to_string()
+            }
+            "tests" | "test" => {
+                patterns.push("Test suite".to_string());
+                "Contains test files and test utilities".to_string()
+            }
+            "templates" => {
+                patterns.push("Template system".to_string());
+                "Template files for code generation".to_string()
+            }
+            "error" | "errors" => {
+                patterns.push("Error handling".to_string());
+                "Error types and error handling utilities".to_string()
+            }
+            "types" => {
+                patterns.push("Type definitions".to_string());
+                "Core type definitions and data structures".to_string()
+            }
+            _ => {
+                // Analyze based on content
+                self.analyze_module_content_purpose(files, public_apis, traits, &mut patterns, &mut key_components)
+            }
+        };
+
+        // Extract key components from public APIs
+        for api in public_apis.iter().take(5) {
+            key_components.push(api.name.clone());
+        }
+
+        // Check for trait definitions -> abstraction layer
+        if !traits.is_empty() {
+            patterns.push("Defines abstractions".to_string());
+            for trait_def in traits.iter().take(3) {
+                key_components.push(format!("{} (trait)", trait_def.name));
+            }
+        }
+
+        Some(ModulePurpose {
+            summary,
+            patterns,
+            key_components,
+        })
+    }
+
+    fn analyze_module_content_purpose(
+        &self,
+        files: &[FileInfo],
+        public_apis: &[PublicApi],
+        traits: &[TraitDef],
+        patterns: &mut Vec<String>,
+        key_components: &mut Vec<String>,
+    ) -> String {
+        // Check for patterns based on file names and content
+        let file_names: Vec<&str> = files.iter()
+            .filter_map(|f| f.path.file_stem())
+            .filter_map(|s| s.to_str())
+            .collect();
+
+        // Check for mod.rs or __init__.py (module entry)
+        let has_mod_entry = files.iter().any(|f| {
+            f.path.file_name().map(|n| n == "mod.rs" || n == "__init__.py").unwrap_or(false)
+        });
+
+        // Check for strategy pattern (trait + multiple implementations)
+        if !traits.is_empty() {
+            let trait_count = traits.len();
+            patterns.push(format!("Defines {} trait(s)", trait_count));
+        }
+
+        // Check for coordinator/dispatcher pattern
+        let has_coordinator = public_apis.iter().any(|api| {
+            api.name.to_lowercase().contains("coordinator") ||
+            api.name.to_lowercase().contains("dispatcher") ||
+            api.name.to_lowercase().contains("manager")
+        });
+
+        if has_coordinator {
+            patterns.push("Coordinator/Manager pattern".to_string());
+        }
+
+        // Check for builder pattern
+        let has_builder = public_apis.iter().any(|api| {
+            api.name.to_lowercase().contains("builder")
+        });
+
+        if has_builder {
+            patterns.push("Builder pattern".to_string());
+        }
+
+        // Generate summary based on analysis
+        if !traits.is_empty() && has_mod_entry {
+            format!("Module providing {} type(s) with {} public API(s)",
+                traits.len(), public_apis.len())
+        } else if !public_apis.is_empty() {
+            format!("Module with {} public function(s)/type(s)", public_apis.len())
+        } else {
+            format!("Module containing {} file(s)", files.len())
+        }
     }
 
     /// Analyze a single file
@@ -188,13 +400,25 @@ impl ProjectAnalyzer {
             .unwrap_or(path)
             .to_path_buf();
 
+        // Perform semantic analysis if available
+        let semantics = self.analyze_file_semantics(path);
+
         Ok(FileInfo {
             path: path.to_path_buf(),
             relative_path,
             lines,
             language,
             size_bytes: metadata.len(),
+            semantics,
         })
+    }
+
+    /// Perform semantic analysis on a file
+    fn analyze_file_semantics(&self, path: &Path) -> Option<FileSemantics> {
+        // Create a new semantic analyzer for thread safety
+        // (the analyzer mutates internal parser state)
+        let mut analyzer = SemanticAnalyzer::new().ok()?;
+        analyzer.analyze_file(path).ok()
     }
 
     /// Check if a path should be ignored

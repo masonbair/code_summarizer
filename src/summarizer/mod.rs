@@ -8,11 +8,63 @@ use anyhow::{Context, Result};
 use log::{info, warn};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 
 use crate::analyzer::ProjectAnalyzer;
 use crate::git::GitClient;
 use crate::llm;
 use crate::templates::TemplateRenderer;
+
+/// Output tier for controlling token usage
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutputTier {
+    /// Minimal output (~200 tokens) - just structure
+    Minimal,
+    /// Standard output (~1000 tokens) - structure + key types
+    Standard,
+    /// Full output (~3000 tokens) - everything including APIs
+    Full,
+}
+
+impl FromStr for OutputTier {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "minimal" => Ok(OutputTier::Minimal),
+            "standard" => Ok(OutputTier::Standard),
+            "full" => Ok(OutputTier::Full),
+            _ => Err(format!("Unknown tier: {}", s)),
+        }
+    }
+}
+
+impl Default for OutputTier {
+    fn default() -> Self {
+        OutputTier::Standard
+    }
+}
+
+/// Options for controlling generation output
+#[derive(Debug, Clone)]
+pub struct GenerationOptions {
+    /// Output tier (minimal, standard, full)
+    pub tier: OutputTier,
+    /// Custom token budget (overrides tier)
+    pub token_budget: Option<usize>,
+    /// Whether to perform semantic extraction
+    pub semantic_extraction: bool,
+}
+
+impl Default for GenerationOptions {
+    fn default() -> Self {
+        Self {
+            tier: OutputTier::Standard,
+            token_budget: None,
+            semantic_extraction: true,
+        }
+    }
+}
 
 /// Generate all summaries for a project
 pub fn generate_all(
@@ -23,8 +75,10 @@ pub fn generate_all(
     llm_model: String,
     llm_endpoint: Option<String>,
     no_llm: bool,
+    options: GenerationOptions,
 ) -> Result<()> {
     info!("Generating summaries for: {:?}", project_root);
+    info!("Output tier: {:?}, Token budget: {:?}", options.tier, options.token_budget);
 
     // Create output directory
     let output_path = if output_dir.is_absolute() {
@@ -99,33 +153,55 @@ pub fn generate_all(
     let token_estimate = estimate_tokens(&hotspots_content);
     println!("  Generated {} ({} tokens estimated)", hotspots_path.display(), token_estimate);
 
-    // Generate module summaries
-    println!("Generating module summaries...");
-    let module_dir = output_path.join("MODULE_MAPS");
-    fs::create_dir_all(&module_dir)?;
-
-    let mut module_count = 0;
-    for module in &structure.modules {
-        if module.name == "(root)" {
-            continue;
-        }
-
-        let module_hotspots: Vec<_> = hotspots
-            .iter()
-            .filter(|h| {
-                h.relative_path
-                    .to_string_lossy()
-                    .starts_with(&module.name)
-            })
-            .cloned()
-            .collect();
-
-        let module_content = renderer.render_module(module, &module_hotspots)?;
-        let module_path = module_dir.join(format!("{}.md", module.name));
-        fs::write(&module_path, &module_content)?;
-        module_count += 1;
+    // Generate API reference (only for standard and full tiers)
+    if options.tier == OutputTier::Standard || options.tier == OutputTier::Full {
+        println!("Generating API reference...");
+        let api_content = renderer.render_api(&structure.modules)?;
+        let api_path = output_path.join("API.md");
+        fs::write(&api_path, &api_content)?;
+        let token_estimate = estimate_tokens(&api_content);
+        println!("  Generated {} ({} tokens estimated)", api_path.display(), token_estimate);
     }
-    println!("  Generated {} module summaries", module_count);
+
+    // Generate type definitions (only for full tier)
+    if options.tier == OutputTier::Full {
+        println!("Generating type definitions...");
+        let types_content = renderer.render_types(&structure.modules)?;
+        let types_path = output_path.join("TYPES.md");
+        fs::write(&types_path, &types_content)?;
+        let token_estimate = estimate_tokens(&types_content);
+        println!("  Generated {} ({} tokens estimated)", types_path.display(), token_estimate);
+    }
+
+    // Generate module summaries (only for standard and full tiers)
+    if options.tier == OutputTier::Standard || options.tier == OutputTier::Full {
+        println!("Generating module summaries...");
+        let module_dir = output_path.join("MODULE_MAPS");
+        fs::create_dir_all(&module_dir)?;
+
+        let mut module_count = 0;
+        for module in &structure.modules {
+            if module.name == "(root)" {
+                continue;
+            }
+
+            let module_hotspots: Vec<_> = hotspots
+                .iter()
+                .filter(|h| {
+                    h.relative_path
+                        .to_string_lossy()
+                        .starts_with(&module.name)
+                })
+                .cloned()
+                .collect();
+
+            let module_content = renderer.render_module(module, &module_hotspots)?;
+            let module_path = module_dir.join(format!("{}.md", module.name));
+            fs::write(&module_path, &module_content)?;
+            module_count += 1;
+        }
+        println!("  Generated {} module summaries", module_count);
+    }
 
     println!("\nSummary generation complete!");
     println!("AI agents can now use {:?} for efficient context.", output_path);
@@ -185,7 +261,7 @@ pub fn update_summaries(
         }
         _ => {
             // Regenerate all
-            generate_all(project_root, output_dir, None, None, String::new(), None, true)?;
+            generate_all(project_root, output_dir, None, None, String::new(), None, true, GenerationOptions::default())?;
         }
     }
 
@@ -357,6 +433,7 @@ mod tests {
             String::new(),
             None,
             true,
+            GenerationOptions::default(),
         );
 
         assert!(result.is_ok(), "generate_all failed: {:?}", result.err());
@@ -381,6 +458,7 @@ mod tests {
             String::new(),
             None,
             true,
+            GenerationOptions::default(),
         )
         .unwrap();
 
@@ -421,6 +499,7 @@ mod tests {
             String::new(),
             None,
             true,
+            GenerationOptions::default(),
         )
         .unwrap();
 
@@ -444,6 +523,7 @@ mod tests {
             String::new(),
             None,
             true,
+            GenerationOptions::default(),
         )
         .unwrap();
 
@@ -451,5 +531,34 @@ mod tests {
 
         assert!(content.contains("Hotness Formula"));
         assert!(content.contains("change_count"));
+    }
+
+    #[test]
+    fn test_minimal_tier_generates_less_output() {
+        let temp = create_test_project();
+        let output_dir = temp.path().join(".ai/context");
+
+        let options = GenerationOptions {
+            tier: OutputTier::Minimal,
+            token_budget: None,
+            semantic_extraction: true,
+        };
+
+        generate_all(
+            temp.path(),
+            &output_dir,
+            None,
+            None,
+            String::new(),
+            None,
+            true,
+            options,
+        )
+        .unwrap();
+
+        // Minimal tier should not create MODULE_MAPS or API.md
+        assert!(output_dir.join("ARCHITECTURE.md").exists());
+        assert!(!output_dir.join("API.md").exists());
+        assert!(!output_dir.join("MODULE_MAPS").exists());
     }
 }

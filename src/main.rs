@@ -59,6 +59,18 @@ enum Commands {
         /// Disable LLM (structural analysis only)
         #[arg(long)]
         no_llm: bool,
+
+        /// Output tier: minimal (~200 tokens), standard (~1000 tokens), full (~3000 tokens)
+        #[arg(long, default_value = "standard", value_parser = ["minimal", "standard", "full"])]
+        tier: String,
+
+        /// Custom token budget (overrides tier)
+        #[arg(long)]
+        token_budget: Option<usize>,
+
+        /// Enable semantic extraction (extract public APIs, types, traits)
+        #[arg(long, default_value = "true")]
+        semantic: bool,
     },
 
     /// Update stale summaries
@@ -164,8 +176,16 @@ fn main() -> Result<()> {
             model,
             llm_endpoint,
             no_llm,
+            tier,
+            token_budget,
+            semantic,
         } => {
-            summarizer::generate_all(&project_root, &cli.output, template, llm, model, llm_endpoint, no_llm)?;
+            let generation_options = summarizer::GenerationOptions {
+                tier: tier.parse().unwrap_or(summarizer::OutputTier::Standard),
+                token_budget,
+                semantic_extraction: semantic,
+            };
+            summarizer::generate_all(&project_root, &cli.output, template, llm, model, llm_endpoint, no_llm, generation_options)?;
         }
         Commands::Update {
             if_stale,

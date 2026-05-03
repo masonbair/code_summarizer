@@ -36,9 +36,33 @@ pub struct FileMetadata {
 #[derive(Debug, Clone, Deserialize)]
 struct RawDependency {
     source_file: String,
-    target_file: String,
     #[serde(default)]
-    dep_type: Option<String>,
+    target_file: Option<String>,
+    #[serde(default)]
+    kind: Option<String>,
+    #[serde(default)]
+    symbol: Option<String>,
+    #[serde(default)]
+    line: Option<usize>,
+}
+
+impl RawDependency {
+    fn dep_type(&self) -> Option<&str> {
+        self.kind.as_deref()
+    }
+}
+
+/// Wrapper for per-file dependency query results
+#[derive(Debug, Clone, Deserialize, Default)]
+struct DependencyQueryResult {
+    #[serde(default)]
+    file: String,
+    #[serde(default)]
+    direction: String,
+    #[serde(default)]
+    count: usize,
+    #[serde(default)]
+    dependencies: Vec<RawDependency>,
 }
 
 /// Hot file info from code-index
@@ -149,15 +173,26 @@ impl CodeIndexClient {
             return Ok(Vec::new());
         }
 
-        let raw_deps: Vec<RawDependency> =
+        // Per-file dependency queries return a wrapped result
+        let result: DependencyQueryResult =
             serde_json::from_str(&stdout).unwrap_or_default();
 
-        let deps = raw_deps
+        let deps = result
+            .dependencies
             .into_iter()
-            .map(|rd| Dependency {
-                source: PathBuf::from(&rd.source_file),
-                target: PathBuf::from(&rd.target_file),
-                dep_type: parse_dep_type(rd.dep_type.as_deref()),
+            .map(|rd| {
+                let target = rd
+                    .target_file
+                    .as_ref()
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| {
+                        PathBuf::from(rd.symbol.as_deref().unwrap_or("unknown"))
+                    });
+                Dependency {
+                    source: PathBuf::from(&rd.source_file),
+                    target,
+                    dep_type: parse_dep_type(rd.dep_type()),
+                }
             })
             .collect();
 
@@ -166,22 +201,49 @@ impl CodeIndexClient {
 
     /// Get all dependencies in the project
     pub fn get_all_dependencies(&self) -> Result<Vec<Dependency>> {
-        // Export the full index and parse dependencies
         let output = Command::new("code-index")
-            .args(["stats", "--json"])
+            .args(["query", "all-dependencies", "--json"])
             .current_dir(&self.project_root)
             .output()
-            .context("Failed to execute code-index stats")?;
+            .context("Failed to execute code-index query all-dependencies")?;
 
-        // For now, return empty - would need to iterate through files
-        // In a real implementation, we might export the full index
         if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            if stderr.contains("No dependencies") || stderr.contains("not found") {
+                return Ok(Vec::new());
+            }
+            anyhow::bail!("code-index query all-dependencies failed: {}", stderr);
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        if stdout.trim().is_empty() {
             return Ok(Vec::new());
         }
 
-        // This would require iterating through all indexed files
-        // For simplicity, return empty and rely on basic analysis
-        Ok(Vec::new())
+        let raw_deps: Vec<RawDependency> =
+            serde_json::from_str(&stdout).unwrap_or_default();
+
+        let deps = raw_deps
+            .into_iter()
+            .map(|rd| {
+                // Use target_file if available, otherwise use symbol as the target
+                let target = rd
+                    .target_file
+                    .as_ref()
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| {
+                        // Create a pseudo-path from the symbol name for visualization
+                        PathBuf::from(rd.symbol.as_deref().unwrap_or("unknown"))
+                    });
+                Dependency {
+                    source: PathBuf::from(&rd.source_file),
+                    target,
+                    dep_type: parse_dep_type(rd.dep_type()),
+                }
+            })
+            .collect();
+
+        Ok(deps)
     }
 
     /// Get dependency count for a specific file

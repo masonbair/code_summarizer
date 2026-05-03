@@ -25,6 +25,10 @@ impl TemplateRenderer {
             .context("Failed to load dependencies template")?;
         tera.add_raw_template("hotspots", builtin::HOTSPOTS_TEMPLATE)
             .context("Failed to load hotspots template")?;
+        tera.add_raw_template("api", builtin::API_TEMPLATE)
+            .context("Failed to load api template")?;
+        tera.add_raw_template("types", builtin::TYPES_TEMPLATE)
+            .context("Failed to load types template")?;
 
         Ok(Self { tera })
     }
@@ -94,6 +98,28 @@ impl TemplateRenderer {
             .context("Failed to render hotspots template")
     }
 
+    /// Render the public API reference
+    pub fn render_api(&self, modules: &[Module]) -> Result<String> {
+        let mut context = TeraContext::new();
+        context.insert("modules", modules);
+        context.insert("generated_at", &chrono::Utc::now().format("%Y-%m-%d %H:%M UTC").to_string());
+
+        self.tera
+            .render("api", &context)
+            .context("Failed to render api template")
+    }
+
+    /// Render the type definitions reference
+    pub fn render_types(&self, modules: &[Module]) -> Result<String> {
+        let mut context = TeraContext::new();
+        context.insert("modules", modules);
+        context.insert("generated_at", &chrono::Utc::now().format("%Y-%m-%d %H:%M UTC").to_string());
+
+        self.tera
+            .render("types", &context)
+            .context("Failed to render types template")
+    }
+
     /// Render a custom template with arbitrary data
     pub fn render_custom<T: Serialize>(&self, template_name: &str, data: &T) -> Result<String> {
         let mut context = TeraContext::new();
@@ -129,6 +155,10 @@ mod tests {
                     files: vec![],
                     subdirs: vec!["utils".to_string()],
                     description: Some("Source code".to_string()),
+                    purpose: None,
+                    public_apis: vec![],
+                    types: vec![],
+                    traits: vec![],
                 },
             ],
             total_files: 10,
@@ -139,6 +169,9 @@ mod tests {
                 map.insert("TOML".to_string(), 2);
                 map
             },
+            entry_points: vec![],
+            all_traits: vec![],
+            all_trait_impls: vec![],
         }
     }
 
@@ -189,6 +222,10 @@ mod tests {
             files: vec![],
             subdirs: vec![],
             description: Some("Source module".to_string()),
+            purpose: None,
+            public_apis: vec![],
+            types: vec![],
+            traits: vec![],
         };
 
         let result = renderer.render_module(&module, &[]);
@@ -222,6 +259,7 @@ mod tests {
                 dependency_count: 5,
                 complexity_score: 7.5,
                 hotness_score: 32.5,
+                enhanced_metrics: None,
             },
         ];
 

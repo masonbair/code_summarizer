@@ -2,11 +2,13 @@ mod structure;
 mod hotspots;
 mod dependencies;
 mod stats;
+mod semantic;
 
 pub use structure::*;
 pub use hotspots::*;
 pub use dependencies::*;
 pub use stats::*;
+pub use semantic::*;
 
 use anyhow::Result;
 use std::path::Path;
